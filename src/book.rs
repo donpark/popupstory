@@ -137,7 +137,7 @@ pub struct PieceOut {
     pub e: f32,
     pub w: f32,
     pub h: f32,
-    pub png: Vec<u8>,
+    pub jpg: Vec<u8>,
     /// Cut line in mm, art-local, y up, base on y = 0 (the glued bottom edge).
     pub outline: Vec<Vec<(f32, f32)>>,
 }
@@ -225,7 +225,7 @@ pub fn render_spread(plan: &Plan, i: usize, key_hi: &RgbImage, samples_hi: &[Rgb
             w: a.w_mm,
             h: a.h_mm,
             outline: a.outline.iter().map(|poly| poly.iter().map(|&(x, y)| (x, a.h_mm - y)).collect()).collect(),
-            png: a.png,
+            jpg: a.jpg,
         })
         .collect();
     SpreadOut {
@@ -260,24 +260,45 @@ fn js_str(s: &str) -> String {
     o
 }
 
-/// The book as JSON (images as data URIs). The web player reads this; `with_svgs`
-/// includes the printable sheets so the browser can offer them for download.
-pub fn book_json<'a>(title: &str, spreads: impl IntoIterator<Item = &'a SpreadOut>, with_svgs: bool) -> String {
-    let b64 = render::b64;
+/// How a book's images and print sheets are stored.
+pub enum Assets<'a> {
+    /// Everything inside book.json as data URIs (books made in the browser).
+    /// `with_svgs` also embeds the print sheets.
+    Inline { with_svgs: bool },
+    /// Images as files next to book.json (`assets/…`), sheets as SVG files (`sheets/…`):
+    /// a player shows spread 1 after a few hundred KB and fetches the rest as you turn the
+    /// pages; the sheets load only when printing. Files to write are pushed to `files`.
+    External { files: &'a mut Vec<(String, Vec<u8>)> },
+}
+
+/// The book as JSON (see `Assets` for where images and sheets go).
+pub fn book_json<'a>(title: &str, spreads: impl IntoIterator<Item = &'a SpreadOut>, mut assets: Assets) -> String {
+    fn asset(assets: &mut Assets, path: String, mime: &str, bytes: &[u8]) -> String {
+        match assets {
+            Assets::Inline { .. } => format!("data:{mime};base64,{}", render::b64(bytes)),
+            Assets::External { files } => {
+                files.push((path.clone(), bytes.to_vec()));
+                path
+            }
+        }
+    }
     let mut j = String::new();
-    let _ = write!(j, "{{\"format\":2,\"title\":{},\"page\":{{\"w\":{PAGE_W},\"h\":{PAGE_H}}},\"spreads\":[", js_str(title));
+    let _ = write!(j, "{{\"format\":3,\"title\":{},\"page\":{{\"w\":{PAGE_W},\"h\":{PAGE_H}}},\"spreads\":[", js_str(title));
     for (i, s) in spreads.into_iter().enumerate() {
+        let n = i + 1;
         if i > 0 {
             j.push(',');
         }
         let t = s.time;
+        let backdrop = asset(&mut assets, format!("assets/s{n:02}-backdrop.jpg"), "image/jpeg", &s.backdrop_jpg);
+        let floor_img = asset(&mut assets, format!("assets/s{n:02}-floor.jpg"), "image/jpeg", &s.floor_jpg);
         let _ = write!(
             j,
-            "{{\"time\":{},\"source\":{},\"backdrop\":\"data:image/jpeg;base64,{}\",\"floorImg\":\"data:image/jpeg;base64,{}\",\"floor\":\"{}\",\"top\":\"{}\",\"warnings\":[{}],\"steps\":[",
+            "{{\"time\":{},\"source\":{},\"backdrop\":{},\"floorImg\":{},\"floor\":\"{}\",\"top\":\"{}\",\"warnings\":[{}],\"steps\":[",
             js_str(&format!("{}:{:04.1}", (t / 60.0) as u32, t % 60.0)),
             js_str(&s.source),
-            b64(&s.backdrop_jpg),
-            b64(&s.floor_jpg),
+            js_str(&backdrop),
+            js_str(&floor_img),
             s.floor,
             s.top,
             s.warnings.iter().map(|w| js_str(w)).collect::<Vec<_>>().join(",")
@@ -297,9 +318,10 @@ pub fn book_json<'a>(title: &str, spreads: impl IntoIterator<Item = &'a SpreadOu
                 .iter()
                 .map(|poly| format!("[{}]", poly.iter().map(|(x, y)| format!("[{x:.2},{y:.2}]")).collect::<Vec<_>>().join(",")))
                 .collect();
+            let img = asset(&mut assets, format!("assets/s{n:02}-{}.jpg", p.label.to_lowercase()), "image/jpeg", &p.jpg);
             let _ = write!(
                 j,
-                "{}{{\"label\":{},\"x\":{:.2},\"d\":{:.2},\"e\":{:.2},\"w\":{:.2},\"h\":{:.2},\"img\":\"data:image/png;base64,{}\",\"outline\":[{}]}}",
+                "{}{{\"label\":{},\"x\":{:.2},\"d\":{:.2},\"e\":{:.2},\"w\":{:.2},\"h\":{:.2},\"img\":{},\"outline\":[{}]}}",
                 if k > 0 { "," } else { "" },
                 js_str(&p.label),
                 p.x,
@@ -307,17 +329,30 @@ pub fn book_json<'a>(title: &str, spreads: impl IntoIterator<Item = &'a SpreadOu
                 p.e,
                 p.w,
                 p.h,
-                b64(&p.png),
+                js_str(&img),
                 outline.join(",")
             );
         }
         j.push(']');
-        if with_svgs {
-            let _ = write!(
-                j,
-                ",\"sheets\":[{}]",
-                std::iter::once(&s.base_svg).chain(s.cutout_svgs.iter()).map(|x| js_str(x)).collect::<Vec<_>>().join(",")
-            );
+        let sheets: Vec<String> = match &mut assets {
+            Assets::Inline { with_svgs: true } => {
+                std::iter::once(&s.base_svg).chain(s.cutout_svgs.iter()).map(|x| js_str(x)).collect()
+            }
+            Assets::Inline { with_svgs: false } => vec![],
+            Assets::External { files } => {
+                let mut v = vec![];
+                files.push((format!("sheets/spread_{n:02}_a_base.svg"), s.base_svg.clone().into_bytes()));
+                v.push(js_str(&format!("sheets/spread_{n:02}_a_base.svg")));
+                for (k, svg) in s.cutout_svgs.iter().enumerate() {
+                    let path = format!("sheets/spread_{n:02}_b_cutouts_{}.svg", k + 1);
+                    files.push((path.clone(), svg.clone().into_bytes()));
+                    v.push(js_str(&path));
+                }
+                v
+            }
+        };
+        if !sheets.is_empty() {
+            let _ = write!(j, ",\"sheets\":[{}]", sheets.join(","));
         }
         j.push('}');
     }

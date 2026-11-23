@@ -100,10 +100,12 @@ export class BookPlayer {
 
   get theta() { return this.manual ?? 90 * this.spring.p; }
 
-  async load(book) {
+  /** base: URL the book was loaded from; asset paths in it are relative to that. */
+  async load(book, base = location.href) {
     for (const s of this.cache.values()) this.scene.remove(s.group);
     this.cache.clear();
     this.book = book;
+    this.base = base;
     const W = book.page.w * CM, H = book.page.h * CM;
     this.W = W; this.H = H;
     this.frontBoard.scale.set(W + 0.8, 1, H + 0.5);
@@ -119,7 +121,8 @@ export class BookPlayer {
     const s = this.book.spreads[i], W = this.W, H = this.H, paper = this.photoPaper;
     const group = new THREE.Group();
     const steps = s.steps.map((st) => ({ x0: st.x0 * CM, x1: st.x1 * CM, h: st.h * CM, d: st.d * CM })).sort((p, q) => p.x0 - q.x0);
-    const [backImg, floorImg] = await Promise.all([loadImage(s.backdrop), loadImage(s.floorImg)]);
+    const url = (src) => new URL(src, this.base).href;   // data: URLs pass through unchanged
+    const [backImg, floorImg] = await Promise.all([loadImage(url(s.backdrop)), loadImage(url(s.floorImg))]);
     const card = (pts, opts) => {
       const m = makeCard(pts, { paper, thickness: THICK, edgeWidth: 0.05, pxPerUnit: 60, contact: { amount: 0.1, height: 0.8 }, ...opts });
       m.matrixAutoUpdate = false;
@@ -154,7 +157,7 @@ export class BookPlayer {
       };
     });
     const pieces = await Promise.all(s.pieces.map(async (p, k) => {
-      const img = await loadImage(p.img);
+      const img = await loadImage(url(p.img));
       const w = p.w * CM, h = p.h * CM;
       // The cut line from the core (mm, y up, base on y = 0). The kit wants one closed outline per card.
       const pts = p.outline.reduce((a, b) => (b.length > a.length ? b : a), []).map(([x, y]) => [x * CM, Math.max(0, y * CM)]);

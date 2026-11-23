@@ -29,8 +29,11 @@ python3 -m http.server -d web 8000          # open http://localhost:8000
 
 # CLI (needs ffmpeg on PATH)
 cargo run --release -- movie.mp4 -o my-book --spreads 6     # binary: popupstory
-#   my-book/sheets/*.svg   print: one base sheet + cut-out sheet(s) per spread
-#   my-book/book.json      drop it on the web app (or serve it and open ?book=path/to/book.json)
+#   my-book/book.json      the book (~25 KB): spreads, folds, cut lines
+#   my-book/assets/        images, fetched spread by spread as pages turn
+#   my-book/sheets/*.svg   print: one base sheet + cut-out sheet(s) per spread, fetched only to print
+#   serve the folder and open the web app with ?book=path/to/my-book/book.json
+#   (--inline writes one self-contained book.json instead)
 ```
 
 ## How it works (no AI by default)
@@ -51,7 +54,9 @@ face stays parallel to the back page or the floor, and a spread that folds flat 
 
 ## The demo book
 
-The preloaded book is built from `web/samples/big-buck-bunny-montage.mp4`, eight wide shots from Big Buck Bunny
+The site opens straight into a prebuilt book: most visitors just play with it. It loads lightly: the book file is
+~25 KB, spread 1's images a few hundred KB, the next spread's images are fetched in the background, and the
+print sheets only when someone prints. The book is built from `web/samples/big-buck-bunny-montage.mp4`, eight wide shots from Big Buck Bunny
 (© Blender Foundation, CC BY 3.0), with depth from Apple's Depth Pro 2 (H+) run locally, as a non-commercial demo.
 `scripts/build-demo.sh` rebuilds it. Books made in the browser use the heuristic or Depth Anything V2 small.
 

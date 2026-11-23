@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild the preloaded demo book (web/samples/big-buck-bunny.book.json) from the sample montage,
+# Rebuild the preloaded demo book (web/samples/big-buck-bunny/) from the sample montage,
 # with depth from Apple's Depth Pro 2 (H+). Two passes: the first picks the keyframes, Depth Pro 2
 # runs once on all of them, the second builds the book with that depth.
 #
@@ -33,6 +33,8 @@ for f in "$WORK"/raw/*-depth16.png; do      # 16-bit inverse depth, white = near
 done
 
 echo "▸ pass 2: book with Depth Pro 2 depth"
-"$BIN" "$VIDEO" -o "$WORK/book" "${ARGS[@]}" --depth-dir "$WORK/depth" --depth-label "Depth Pro 2" --embed-sheets
-cp "$WORK/book/book.json" web/samples/big-buck-bunny.book.json
-echo "✓ web/samples/big-buck-bunny.book.json ($(du -h web/samples/big-buck-bunny.book.json | cut -f1))"
+"$BIN" "$VIDEO" -o "$WORK/book" "${ARGS[@]}" --depth-dir "$WORK/depth" --depth-label "Depth Pro 2"
+DEST=web/samples/big-buck-bunny
+rm -rf "$DEST" && mkdir -p "$DEST"
+cp -R "$WORK/book/book.json" "$WORK/book/assets" "$WORK/book/sheets" "$DEST/"
+echo "✓ $DEST: book.json $(du -h "$DEST/book.json" | cut -f1), images $(du -sh "$DEST/assets" | cut -f1), print sheets $(du -sh "$DEST/sheets" | cut -f1)"

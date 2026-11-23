@@ -2,7 +2,7 @@
 use crate::layers::Piece;
 use crate::layout::{Crop, Placed, PAGE_H, PAGE_W};
 use base64::Engine;
-use image::{GrayImage, ImageFormat, Luma, Rgba, RgbaImage, RgbImage};
+use image::{GrayImage, ImageFormat, Luma, RgbaImage, RgbImage};
 use imageproc::contours::{find_contours, BorderType};
 use imageproc::distance_transform::Norm;
 use imageproc::geometry::approximate_polygon_dp;
@@ -13,7 +13,9 @@ use std::io::Cursor;
 const MARGIN_MM: f32 = 0.8; // bleed beyond the subject's edge, out to the cut line
 
 pub struct Art {
-    pub png: Vec<u8>,
+    /// The art as JPEG: the frame itself, cropped. The cut outline defines the shape (the
+    /// player cuts the card along it, the print sheet clips to it), so no alpha is needed.
+    pub jpg: Vec<u8>,
     pub w_mm: f32,
     pub h_mm: f32,
     /// Offset of the piece bbox's left edge inside the art, mm.
@@ -33,7 +35,7 @@ pub fn encode_png(img: &RgbaImage) -> Vec<u8> {
 
 pub fn encode_jpeg(img: &RgbImage) -> Vec<u8> {
     let mut v = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut v, 88).encode_image(img).unwrap();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut v, 84).encode_image(img).unwrap();
     v
 }
 
@@ -105,23 +107,14 @@ pub fn piece_art(hm: &(i64, i64, GrayImage), pl: &Placed, key_hi: &RgbImage) -> 
         }
     }
     let (kw, kh) = key_hi.dimensions();
-    let rgba = RgbaImage::from_fn(cw, ch, |x, y| {
-        if mask.get_pixel(x, y)[0] != 0 {
-            let fx = (hx + x as i64 - pad as i64).clamp(0, kw as i64 - 1) as u32;
-            let fy = (hy + y as i64 - pad as i64).clamp(0, kh as i64 - 1) as u32;
-            let c = key_hi.get_pixel(fx, fy);
-            Rgba([c[0], c[1], c[2], 255])
-        } else if cut.get_pixel(x, y)[0] != 0 {
-            // Bleed: keep printing the real frame out to the cut line, so a slightly
-            // off cut never shows a white rim.
-            let fx = (hx + x as i64 - pad as i64).clamp(0, kw as i64 - 1) as u32;
-            let fy = (hy + y as i64 - pad as i64).clamp(0, kh as i64 - 1) as u32;
-            let c = key_hi.get_pixel(fx, fy);
-            Rgba([c[0], c[1], c[2], 255])
-        } else {
-            Rgba([0, 0, 0, 0])
-        }
+    // The whole art rectangle is the frame itself: inside the cut line that is the subject
+    // plus bleed (a slightly off cut never shows a white rim); outside it is never seen.
+    let rgb = RgbImage::from_fn(cw, ch, |x, y| {
+        let fx = (hx + x as i64 - pad as i64).clamp(0, kw as i64 - 1) as u32;
+        let fy = (hy + y as i64 - pad as i64).clamp(0, kh as i64 - 1) as u32;
+        *key_hi.get_pixel(fx, fy)
     });
+    let _ = &mask;
     // Trace the cut line (add an empty row so the flat bottom is closed).
     let mut traced = GrayImage::new(cw, ch + 1);
     image::imageops::replace(&mut traced, &cut, 0, 0);
@@ -135,7 +128,7 @@ pub fn piece_art(hm: &(i64, i64, GrayImage), pl: &Placed, key_hi: &RgbImage) -> 
                 .collect()
         })
         .collect();
-    Art { png: encode_png(&rgba), w_mm: cw as f32 * m, h_mm: ch as f32 * m, pad_mm: pad as f32 * m, outline }
+    Art { jpg: encode_jpeg(&rgb), w_mm: cw as f32 * m, h_mm: ch as f32 * m, pad_mm: pad as f32 * m, outline }
 }
 
 /// Crop the high-res background to the page aspect ratio.
@@ -281,8 +274,11 @@ pub fn pieces_svgs(spread: usize, items: &[(&Placed, &Art)]) -> Vec<String> {
             y = my;
             row_h = 0.0;
         }
-        let _ = writeln!(body, r#"<image href="data:image/png;base64,{}" x="{x:.2}" y="{y:.2}" width="{:.2}" height="{:.2}" preserveAspectRatio="none"/>"#, b64(&art.png), art.w_mm, art.h_mm);
-        let _ = writeln!(body, r#"<path d="{}" {CUT}/>"#, path_d(&art.outline, x, y));
+        let d = path_d(&art.outline, x, y);
+        let id = format!("s{spread}c{}", pl.label); // unique across spreads on one print page
+        let _ = writeln!(body, r#"<clipPath id="{id}"><path d="{d}"/></clipPath>"#);
+        let _ = writeln!(body, r#"<image href="data:image/jpeg;base64,{}" x="{x:.2}" y="{y:.2}" width="{:.2}" height="{:.2}" preserveAspectRatio="none" clip-path="url(#{id})"/>"#, b64(&art.jpg), art.w_mm, art.h_mm);
+        let _ = writeln!(body, r#"<path d="{d}" {CUT}/>"#);
         let _ = writeln!(body, r##"<text x="{x:.2}" y="{:.2}" font-size="3" fill="#222">S{spread}-{} → box {} (depth {:.0} mm)</text>"##, y + art.h_mm + 3.5, pl.label, pl.label, pl.d);
         x += art.w_mm + gap;
         row_h = row_h.max(art.h_mm);

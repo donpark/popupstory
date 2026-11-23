@@ -102,7 +102,7 @@ impl Session {
 
     /// The finished book as JSON (with printable SVG sheets embedded).
     pub fn book_json(&self, title: &str) -> String {
-        book::book_json(title, self.outs.iter().flatten(), true)
+        book::book_json(title, self.outs.iter().flatten(), book::Assets::Inline { with_svgs: true })
     }
 
     /// Debug: the depth proxy for spread `i` as a grayscale PNG.

@@ -47,7 +47,11 @@ struct Args {
     /// Pixel width used for printed art
     #[arg(long, default_value_t = 1600)]
     art_width: u32,
-    /// Embed the printable sheets in book.json (lets the web player offer "Print sheets")
+    /// Write a single self-contained book.json (images as data URIs) instead of
+    /// book.json + assets/ + sheets/
+    #[arg(long)]
+    inline: bool,
+    /// With --inline: also embed the print sheets
     #[arg(long)]
     embed_sheets: bool,
     /// Book title (defaults to the file name)
@@ -65,7 +69,7 @@ fn main() -> Result<()> {
     });
     let out = &args.out;
     let cache = out.join(".cache");
-    for d in ["sheets", "keyframes", "debug"] {
+    for d in ["keyframes", "debug"] {
         std::fs::create_dir_all(out.join(d))?;
     }
     std::fs::create_dir_all(&cache)?;
@@ -141,10 +145,6 @@ fn main() -> Result<()> {
             vec![]
         };
         let o = book::render_spread(&plan, i, &keys[i].0, &samples);
-        std::fs::write(out.join(format!("sheets/spread_{n:02}_a_base.svg")), &o.base_svg)?;
-        for (k, svg) in o.cutout_svgs.iter().enumerate() {
-            std::fs::write(out.join(format!("sheets/spread_{n:02}_b_cutouts_{}.svg", k + 1)), svg)?;
-        }
         eprintln!(
             "  spread {n}: t={:.1}s, {} cut-outs ({}){}",
             o.time,
@@ -154,8 +154,21 @@ fn main() -> Result<()> {
         );
         outs.push(o);
     }
-    std::fs::write(out.join("book.json"), book::book_json(&title, &outs, args.embed_sheets))?;
+    // book.json + assets/ + sheets/: a player loads only what each spread needs.
+    // --embed-sheets / --inline put everything in one book.json instead.
+    let mut files = Vec::new();
+    let json = if args.inline {
+        book::book_json(&title, &outs, book::Assets::Inline { with_svgs: args.embed_sheets })
+    } else {
+        book::book_json(&title, &outs, book::Assets::External { files: &mut files })
+    };
+    std::fs::write(out.join("book.json"), json)?;
+    for (path, bytes) in files {
+        let p = out.join(path);
+        std::fs::create_dir_all(p.parent().unwrap())?;
+        std::fs::write(p, bytes)?;
+    }
     std::fs::remove_dir_all(&cache).ok();
-    eprintln!("✓ wrote {0}/book.json (open it in the web player) and printable sheets in {0}/sheets", out.display());
+    eprintln!("✓ wrote {0}/book.json with {0}/assets and printable sheets in {0}/sheets (serve the folder and open it in the web player)", out.display());
     Ok(())
 }

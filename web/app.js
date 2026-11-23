@@ -6,7 +6,7 @@ import { BookPlayer } from './player.js';
 const $ = (id) => document.getElementById(id);
 const ANALYSIS_W = 320;
 const ART_W = 1600;
-const DEMO_BOOK = './samples/big-buck-bunny.book.json';
+const DEMO_BOOK = './samples/big-buck-bunny/book.json';
 
 const wasmReady = init();
 let player = null;
@@ -105,8 +105,10 @@ function show(view) {
   for (const v of ['intro', 'working', 'viewer']) $(v).hidden = v !== view;
 }
 
-async function openBook(b) {
+let bookBase = location.href;
+async function openBook(b, base = location.href) {
   book = b;
+  bookBase = base;
   show('viewer');
   $('book-title').textContent = b.title;
   $('print').disabled = !b.spreads.some((s) => s.sheets);
@@ -121,7 +123,7 @@ async function openBook(b) {
     });
     window.__player = player;
   }
-  await player.load(b);
+  await player.load(b, base);
 }
 
 async function handleFile(file) {
@@ -138,13 +140,19 @@ async function handleFile(file) {
   }
 }
 
-function printSheets() {
-  const sheets = book.spreads.flatMap((s) => s.sheets || []);
+async function printSheets() {
+  // Open the window now, inside the click (pop-up blockers refuse a window opened after an await).
+  const w = window.open('', '_blank');
+  if (!w) return alert('Allow pop-ups to open the print sheets.');
+  w.document.write('<p style="font:16px Georgia,serif;padding:24px">Preparing the print sheets…</p>');
+  // Sheets are inline SVG (books made here) or files next to the book (prebuilt books),
+  // fetched only now: most visitors never print.
+  const sheets = await Promise.all(book.spreads.flatMap((s) => s.sheets || []).map((x) =>
+    x.trimStart().startsWith('<svg') ? x : fetch(new URL(x, bookBase)).then((r) => r.text())));
   const html = `<!doctype html><meta charset="utf-8"><title>${book.title.replace(/</g, '&lt;')} - print sheets</title>
 <style>@page{size:A4 portrait;margin:0}html,body{margin:0;background:#888}svg{display:block;width:210mm;height:297mm;margin:0 auto 8px;background:#fff;page-break-after:always}
 @media print{body{background:none}svg{margin:0}}</style>${sheets.join('\n')}`;
-  const w = window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
-  if (!w) alert('Allow pop-ups to open the print sheets.');
+  w.location.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
 }
 
 function download(name, text, type) {
@@ -191,6 +199,6 @@ if (q) {
   $('status').textContent = 'Opening the book…';
   fetch(q)
     .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-    .then(openBook)
+    .then((b) => openBook(b, new URL(q, location.href).href))
     .catch((e) => { show('intro'); $('error').textContent = `Couldn't load ${q}: ${e.message}`; });
 }

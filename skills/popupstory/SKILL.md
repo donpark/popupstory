@@ -26,7 +26,8 @@ wasm-pack build --target web --release --no-default-features --out-dir web/pkg
 python3 -m http.server -d web 8000           # web app; must be served over http (WASM + ES modules fail on file://)
 ```
 
-Open `http://localhost:8000/?book=/path/book.json` to view a CLI book. Pushing to `main` deploys `web/` to GitHub
+The site opens on the prebuilt demo (`web/samples/big-buck-bunny/`, rebuilt by `scripts/build-demo.sh`); `?new`
+skips it. Open `http://localhost:8000/?book=/path/to/book.json` to view a CLI book (serve its folder). Pushing to `main` deploys `web/` to GitHub
 Pages (`.github/workflows/pages.yml`).
 
 ## Map
@@ -74,7 +75,7 @@ core so the CLI, the web app and any future desktop app get them together.
 ## book.json
 
 ```jsonc
-{ "format": 2, "title": "…", "page": { "w": 210, "h": 148.5 },
+{ "format": 3, "title": "…", "page": { "w": 210, "h": 148.5 },
   "spreads": [{
     "time": "0:03.4", "source": "motion + saliency + …",       // which depth cues were used
     "backdrop": "data:image/jpeg;base64,…", "floorImg": "data:image/jpeg;base64,…",
@@ -87,7 +88,12 @@ core so the CLI, the web app and any future desktop app get them together.
   }] }
 ```
 
-Bump the format deliberately: the player, the CLI and saved books all read it.
+`format: 3`: image fields (`backdrop`, `floorImg`, `img`) and `sheets` entries are either data URIs / inline SVG
+(books made in the browser, `--inline`) or paths relative to book.json (`assets/…`, `sheets/…`; the CLI default). The
+player resolves paths against the book's URL and loads images per spread (plus the next one ahead). The app fetches
+sheet files only on *Print*. Cut-out art is JPEG: the cut outline defines the shape (the player cuts the card along
+it, the print sheet clips to it), so no alpha is needed. Bump the format deliberately: the player, the CLI and saved
+books all read it.
 
 ## Paper-engineering invariants (enforced in layout.rs, asserted in tests/pipeline.rs)
 
