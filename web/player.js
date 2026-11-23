@@ -3,8 +3,9 @@
 // a tilt-shift macro lens, and the latched paper-flap spring for opening and closing.
 //
 // The fold kinematics match the printed sheets exactly. At opening angle θ every box-fold strip is a parallelogram
-// (spine O, back attach B = a·b, floor attach F = a·f, corner C = B + F), so every face stays parallel to either the
-// back page or the floor, and each cut-out stands on its box's front face.
+// (spine O, back attach B = h·b, floor attach F = d·f, corner C = B + F), so every face stays parallel to either the
+// back page or the floor. Each cut-out is glued at elevation e on its box's front face, which puts it back where it
+// was in the frame: head-on the spread reproduces the shot, from any other angle it shows its depth.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
@@ -15,6 +16,12 @@ import { PaperSound } from './vendor/papercraft/paper-sound.js';
 const CM = 0.1;          // book data is in mm; the paper kit's defaults assume 1 unit = 1 cm
 const THICK = 0.035;     // ~350 gsm card
 const loadImage = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+
+/** Paint part of an image (source rect in image pixels) into a w×h card print. */
+const paintCrop = (img, sx, sy, sw, sh, w, h) => (P) => {
+  const g = P.g;
+  g.save(); g.translate(0, h); g.scale(1, -1); g.drawImage(img, sx, sy, sw, sh, 0, 0, w, h); g.restore();
+};
 
 /** Paint an image into a card print. Prints have y up in card units; images have y down. */
 const paintImage = (img, w, h) => (P) => {
@@ -42,9 +49,12 @@ export class BookPlayer {
     this.controls.maxPolarAngle = Math.PI * 0.47;
     this.controls.minDistance = 22; this.controls.maxDistance = 140;
 
-    this.lights = paperLights(this.scene, { target: new THREE.Vector3(0, 4, 4), shadowExtent: 20, distance: 60 });
+    this.lights = paperLights(this.scene, { target: new THREE.Vector3(0, 4, 4), shadowExtent: 20, distance: 60, key: '#fff3e6', fill: '#f4ece2', sky: '#fffaf2' });
     enableSoftShadows(this.lights.key, { softness: 0.26, maxPenumbra: 1.0 });
     this.paper = paperTextures(r, { unitsPerTile: 6 });
+    // Photos are printed on bright white, low-fibre stock: the warm default sheet multiplies
+    // into every print and turns a film's palette orange.
+    this.photoPaper = paperTextures(r, { color: '#ffffff', unitsPerTile: 6, fibres: 0.35, mottle: 0.015, normalStrength: 1.2, seed: 11 });
 
     // A desk and the book's boards (the brief is literally a book, so its edges stay in view).
     const desk = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), paperMaterial({ color: '#a0826a', map: this.paper.map, normalMap: this.paper.normalMap }));
@@ -57,7 +67,9 @@ export class BookPlayer {
     this.scene.add(desk, this.frontBoard, this.backBoard);
 
     this.post = new PaperPost(r, this.scene, this.camera, {
-      maxBlur: 9, focusBand: 0.34, ramp: 0.4, aoRadius: 0.7, aoBias: 0.03, hazeStart: 80, hazeEnd: 220, exposure: 0.85,
+      maxBlur: 9, focusBand: 0.34, ramp: 0.4, aoRadius: 0.7, aoBias: 0.03, hazeStart: 80, hazeEnd: 220,
+      // Printed photos already carry their own grade: keep the lens close to neutral.
+      exposure: 0.9, tint: [1.0, 1.0, 1.0], saturation: 1.0, contrast: 1.04, greenDesat: 0.0, shadowLift: 0.02,
     });
     this.post.focus.set(0, 4, 5);
 
@@ -104,29 +116,41 @@ export class BookPlayer {
 
   async build(i) {
     if (this.cache.has(i)) return this.cache.get(i);
-    const s = this.book.spreads[i], W = this.W, H = this.H, paper = this.paper;
+    const s = this.book.spreads[i], W = this.W, H = this.H, paper = this.photoPaper;
     const group = new THREE.Group();
-    const steps = s.steps.map((st) => ({ x0: st.x0 * CM, x1: st.x1 * CM, a: st.a * CM })).sort((p, q) => p.x0 - q.x0);
+    const steps = s.steps.map((st) => ({ x0: st.x0 * CM, x1: st.x1 * CM, h: st.h * CM, d: st.d * CM })).sort((p, q) => p.x0 - q.x0);
     const [backImg, floorImg] = await Promise.all([loadImage(s.backdrop), loadImage(s.floorImg)]);
-    const card = (pts, opts) => { const m = makeCard(pts, { paper, thickness: THICK, edgeWidth: 0.05, pxPerUnit: 60, contact: { amount: 0.1, height: 0.8 }, ...opts }); m.matrixAutoUpdate = false; group.add(m); return m; };
+    const card = (pts, opts) => {
+      const m = makeCard(pts, { paper, thickness: THICK, edgeWidth: 0.05, pxPerUnit: 60, contact: { amount: 0.1, height: 0.8 }, ...opts });
+      m.matrixAutoUpdate = false;
+      // Photos printed on card: keep the fibre subtle and the stock's tone neutral.
+      const face = Array.isArray(m.material) ? m.material[0] : m.material;
+      face.normalScale?.set(0.22, 0.22);
+      face.color?.set('#ffffff');
+      group.add(m);
+      return m;
+    };
 
     // Back page: the box strips are cut out of it along the spine (they pop forward).
     const backPts = [[0, 0]];
-    for (const st of steps) backPts.push([st.x0, 0], [st.x0, st.a], [st.x1, st.a], [st.x1, 0]);
+    for (const st of steps) backPts.push([st.x0, 0], [st.x0, st.h], [st.x1, st.h], [st.x1, 0]);
     backPts.push([W, 0], [W, H], [0, H]);
     const back = card(backPts, { paint: paintImage(backImg, W, H), folds: ['bottom'], effects: 0 });
     // Floor: origin at the front-left corner, y toward the spine.
     const floorPts = [[0, 0], [W, 0], [W, H]];
-    for (const st of [...steps].reverse()) floorPts.push([st.x1, H], [st.x1, H - st.a], [st.x0, H - st.a], [st.x0, H]);
+    for (const st of [...steps].reverse()) floorPts.push([st.x1, H], [st.x1, H - st.d], [st.x0, H - st.d], [st.x0, H]);
     floorPts.push([0, H]);
     const floor = card(floorPts, { paint: paintImage(floorImg, W, H), folds: ['top'], effects: 0, contact: null });
 
     const faces = steps.map((st) => {
-      const w = st.x1 - st.x0, rect = [[0, 0], [w, 0], [w, st.a], [0, st.a]];
+      const w = st.x1 - st.x0;
+      // The front face carries the backdrop it hides, so head-on the box disappears.
+      const k = backImg.naturalWidth / W;
+      const front = paintCrop(backImg, st.x0 * k, (H - st.h) * k, w * k, st.h * k, w, st.h);
       return {
         st,
-        top: card(rect, { paint: (P) => P.fill(s.top), folds: ['top', 'bottom'], contact: null }),
-        front: card(rect, { paint: (P) => P.fill(s.floor), folds: ['top', 'bottom'] }),
+        top: card([[0, 0], [w, 0], [w, st.d], [0, st.d]], { paint: (P) => P.fill(s.top), folds: ['top', 'bottom'], contact: null }),
+        front: card([[0, 0], [w, 0], [w, st.h], [0, st.h]], { paint: front, folds: ['top', 'bottom'], effects: 0 }),
       };
     });
     const pieces = await Promise.all(s.pieces.map(async (p, k) => {
@@ -156,12 +180,12 @@ export class BookPlayer {
     place(sp.back, X(0), b, n);
     place(sp.floor, new THREE.Vector3(-W / 2, 0, H), negF, up);
     for (const { st, top, front } of sp.faces) {
-      const B = b.clone().multiplyScalar(st.a), F = f.clone().multiplyScalar(st.a);
+      const B = b.clone().multiplyScalar(st.h), F = f.clone().multiplyScalar(st.d);
       place(top, X(st.x0).add(B).add(F), negF, up);   // from the corner C back toward B, print side up
       place(front, X(st.x0).add(F), b, n);
     }
     for (const { p, mesh, eps } of sp.pieces) {
-      place(mesh, X(p.x * CM).add(f.clone().multiplyScalar(p.a * CM)).addScaledVector(n, eps), b, n);
+      place(mesh, X(p.x * CM).addScaledVector(f, p.d * CM).addScaledVector(b, p.e * CM).addScaledVector(n, eps), b, n);
     }
     this.backBoard.matrix.makeBasis(ex, b, n).setPosition(b.clone().multiplyScalar(H / 2 + 0.1).addScaledVector(n, -0.2 - THICK));
     this.backBoard.matrix.multiply(new THREE.Matrix4().makeScale(W + 0.8, H + 0.5, 1));

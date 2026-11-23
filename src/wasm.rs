@@ -26,7 +26,13 @@ pub struct Session {
 impl Session {
     #[wasm_bindgen(constructor)]
     pub fn new(fps: f64, spreads: usize, layers: usize, max_pieces: usize, cut_threshold: f32) -> Session {
-        Session { fps, opts: Options { spreads, layers, max_pieces, cut_threshold }, frames: vec![], plan: None, outs: vec![] }
+        Session {
+            fps,
+            opts: Options { spreads, layers, max_pieces, cut_threshold, skip_closeups: true },
+            frames: vec![],
+            plan: None,
+            outs: vec![],
+        }
     }
 
     /// Analysis frame rate for a video of this duration (seconds).
@@ -54,7 +60,7 @@ impl Session {
                 )
             })
             .collect();
-        let json = format!("{{\"shots\":{},\"spreads\":[{}]}}", plan.shots, spreads.join(","));
+        let json = format!("{{\"shots\":{},\"closeups\":{},\"spreads\":[{}]}}", plan.shots, plan.closeups, spreads.join(","));
         self.outs = (0..plan.spreads.len()).map(|_| None).collect();
         self.plan = Some(plan);
         json

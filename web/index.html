@@ -37,6 +37,9 @@
   .link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
   .foot { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
   .foot a { color: inherit; }
+  .opts label.model { align-items: flex-start; }
+  .opts label.model input { margin-top: 3px; }
+  .opts label.model small { display: block; font-size: 12px; opacity: .8; }
   #error { color: #a0301a; min-height: 1.4em; margin: 14px 0 0; font-size: 14px; }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 16px; }
   #bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
@@ -83,9 +86,9 @@
     </label>
     <div class="opts">
       <label>Spreads <select id="spreads"><option>3</option><option>4</option><option selected>6</option><option>8</option><option>10</option></select></label>
-      <label title="Downloads a small depth-estimation model (~25 MB) the first time and runs it on each keyframe, on this device."><input id="model" type="checkbox"> Use a depth model for better layers</label>
+      <label class="model"><input id="model" type="checkbox"> <span>Use a depth model for better layers<small>Downloads a ~25 MB model once; it runs on your device.</small></span></label>
     </div>
-    <p class="sample">No video handy? <button type="button" class="link" id="sample">Try a 10-second sample</button> <small>(Big Buck Bunny, © Blender Foundation, CC BY 3.0)</small></p>
+    <p class="sample">No video handy? <button type="button" class="link" id="sample">Try the 30-second sample</button> <small>(Big Buck Bunny, © Blender Foundation, CC BY 3.0)</small></p>
     <p id="error" role="alert"></p>
     <p class="foot"><a href="https://github.com/donpark/popupstory" target="_blank" rel="noopener">Source on GitHub</a> · paper rendering by <a href="https://github.com/xikhar/papercraft" target="_blank" rel="noopener">papercraft</a></p>
   </div>

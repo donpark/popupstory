@@ -57,16 +57,30 @@ A world can look right open and be impossible closed. Check these before calling
 - **Layers come from figure/ground, not raw depth.** Everything below the horizon is "near", so thresholding depth
   selects the floor. Subtract each image row's typical depth (a smoothed ~40th percentile ≈ the ground plane at that
   distance). What remains is what stands up. Use raw depth only to decide how far forward each piece sits.
-- **Nested masks** (thresholds on the figure map) give tunnel-book layering. Drop a shallower piece when a deeper
-  one covers ≥ 80 % of it, and drop full-width bands (> 75 % of the width): the floor page already shows the ground.
+- **One object, one piece, one depth.** Take each connected figure region whole at its median depth. Split it only
+  where its depths form clearly separate groups. Slicing by depth bands (nested thresholds) cuts one character into
+  two or three stacked copies. Score "stands out" on a fixed scale, not normalised per frame: one very near object
+  would otherwise flatten every other figure. Drop full-width bands (the floor page already shows the ground) and
+  anything far that only stands out against the sky.
+- **Snap masks to depth edges.** Masks from a small, blurred map carry a halo of whatever is behind (grass round a
+  head). With a sharp full-resolution depth map (Depth Pro 2 is very good at edges), assign the band around each
+  mask by comparing a pixel's depth with the object's and the surroundings' local depth.
+- **Put pieces back where they were.** Lift each cut-out on a box tall enough that its bottom sits at its height
+  in the frame, and print the box face with the backdrop it hides. Head-on the page then reproduces the shot, and
+  every other angle reveals the depth. Glued to the floor instead, pieces drop and shrink, and their filled-in
+  ghosts show above them.
+- **Fill what you cut out.** Remove each cut-out from the backdrop (a push-pull pyramid fill is enough, since it sits
+  behind the piece) and remove nearer cut-outs from farther ones, or everything appears twice. Anything that can't
+  fold flat at its real size (a trunk reaching the top of the page) stays in the backdrop rather than being shrunk.
+- **Choose wide shots.** Close-ups make poor pop-ups: one subject fills the page and can't fold flat in place.
 - **Bleed, never a white rim.** Print the real image ~0.8 mm past the subject, out to the cut line. A white border
   reads as a sticker (papercraft's look rules ban it too).
 - **Flat base on the hinge line.** The glued edge is a fold, not a cut, so give it no printed rim (`folds:
   ['bottom']` in `makeCard`).
 - **Simplify outlines** (Ramer–Douglas–Peucker, ~1 px at print resolution); morphological close then open before
   tracing. Spiky, thin silhouettes read as CG.
-- **Moving subjects:** the temporal median of a still-camera shot is a clean plate. Paint movers out of the sharp
-  keyframe; don't use the median frame itself, which blurs from small camera drift.
+- **Don't paint movers out of the backdrop wholesale** with a temporal-median clean plate. It also erases subjects
+  that never became cut-outs. Fill only what you actually cut out.
 - **Cheap depth that runs locally:** Depth Anything V2 small via transformers.js on WebGPU runs about a second per
   frame after a one-time ~25 MB download. The heuristic fallback (motion, focus, saliency, vertical position) is
   fine for a still camera with one subject, and weak otherwise.

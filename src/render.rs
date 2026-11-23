@@ -37,14 +37,30 @@ pub fn encode_jpeg(img: &RgbImage) -> Vec<u8> {
     v
 }
 
-/// Render one cut-out at high resolution: image + white margin + notches, flat bottom.
-pub fn piece_art(p: &Piece, pl: &Placed, key_hi: &RgbImage, sx: f32, sy: f32) -> Art {
+/// A piece's mask at print resolution, in the frame of its analysis bounding box:
+/// (left, top) in key pixels and the mask. Uses the edge-accurate mask when there is one.
+pub fn hi_mask(p: &Piece, sx: f32, sy: f32) -> (i64, i64, GrayImage) {
     let hx = (p.bx as f32 * sx) as i64;
     let hy = (p.by as f32 * sy) as i64;
     let hw = ((p.bw as f32 * sx).round() as u32).max(1);
     let hh = ((p.bh as f32 * sy).round() as u32).max(1);
+    let m = match &p.fine {
+        Some(f) => GrayImage::from_fn(hw, hh, |x, y| {
+            Luma([f.sample(p.bx as f32 + (x as f32 + 0.5) / sx, p.by as f32 + (y as f32 + 0.5) / sy)])
+        }),
+        None => {
+            let r = image::imageops::resize(&p.mask, hw, hh, image::imageops::FilterType::Triangle);
+            GrayImage::from_fn(hw, hh, |x, y| Luma([if r.get_pixel(x, y)[0] >= 128 { 255 } else { 0 }]))
+        }
+    };
+    (hx, hy, m)
+}
+
+/// Render one cut-out at high resolution: image + bleed + notches, flat bottom.
+pub fn piece_art(hm: &(i64, i64, GrayImage), pl: &Placed, key_hi: &RgbImage) -> Art {
+    let (hx, hy, mask_hi) = (hm.0, hm.1, &hm.2);
+    let (hw, hh) = mask_hi.dimensions();
     let m = pl.wmm / hw as f32; // mm per art pixel
-    let mask_hi = image::imageops::resize(&p.mask, hw, hh, image::imageops::FilterType::Triangle);
     let margin_px = ((MARGIN_MM / m).ceil() as u32).clamp(1, 120);
     let pad = margin_px + 2;
     let (cw, ch) = (hw + 2 * pad, hh + pad); // no padding below: bottom edge sits on the floor
@@ -137,8 +153,25 @@ pub fn backdrop(src: &RgbImage, crop: &Crop, sx: f32, sy: f32) -> RgbImage {
 /// continue onto the floor page.
 pub fn floor_image(bd: &RgbImage) -> RgbImage {
     let (w, h) = bd.dimensions();
-    let band = image::imageops::crop_imm(bd, 0, h - h * 3 / 10, w, h * 3 / 10).to_image();
-    let mut f = image::imageops::resize(&image::imageops::flip_vertical(&band), w, h, image::imageops::FilterType::Triangle);
+    // Mirror a thin band of the backdrop's bottom at the spine (so the seam is invisible),
+    // then fade into a soft, blurred version of the same ground. Tiling the band repeats its
+    // rocks and leaves in rows; stretching it smears it into streaks; a deep band mirrors
+    // trunks into "reflections".
+    let bh = (h * 3 / 25).max(1);
+    let band = image::imageops::crop_imm(bd, 0, h - bh, w, bh).to_image();
+    let flipped = image::imageops::flip_vertical(&band);
+    let soft = image::imageops::blur(&image::imageops::resize(&band, w, h, image::imageops::FilterType::Triangle), (w as f32) / 60.0);
+    let mut f = RgbImage::new(w, h);
+    for y in 0..h {
+        // 1 near the spine, easing to 0 over the next two band-heights
+        let t = (1.0 - (y as f32 - bh as f32 * 0.6) / (bh as f32 * 2.0)).clamp(0.0, 1.0);
+        let t = t * t * (3.0 - 2.0 * t);
+        for x in 0..w {
+            let sharp = if y < bh { *flipped.get_pixel(x, y) } else { *band.get_pixel(x, (y % bh).min(bh - 1)) };
+            let s = soft.get_pixel(x, y);
+            f.put_pixel(x, y, image::Rgb([0, 1, 2].map(|k| (sharp[k] as f32 * t + s[k] as f32 * (1.0 - t)) as u8)));
+        }
+    }
     for p in f.pixels_mut() {
         p.0 = p.0.map(|c| (c as f32 * 0.86) as u8);
     }
@@ -178,23 +211,33 @@ const VALLEY: &str = r##"stroke="#008a3e" stroke-width="0.3" stroke-dasharray="3
 const MOUNTAIN: &str = r##"stroke="#e07000" stroke-width="0.3" stroke-dasharray="4 1.5 1 1.5" fill="none""##;
 
 /// The base sheet: A4 portrait, backdrop on the top half, floor on the bottom half.
+/// For each box: slits, the valley folds at both attach lines, the mountain fold between the
+/// top face and the front face, the top face in the ground colour, and the front face printed
+/// with the backdrop that is behind it, so the box vanishes when seen head-on.
 pub fn base_svg(spread: usize, backdrop_jpg: &[u8], floor_jpg: &[u8], top: &str, placed: &[Placed]) -> String {
     let sp = PAGE_H; // spine y
     let mut s = String::new();
-    let _ = writeln!(s, r#"<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" viewBox="0 0 210 297" font-family="Helvetica, Arial, sans-serif">"#);
-    let _ = writeln!(s, r#"<image href="data:image/jpeg;base64,{}" x="0" y="0" width="{PAGE_W}" height="{sp}" preserveAspectRatio="none"/>"#, b64(backdrop_jpg));
+    let _ = writeln!(s, r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="210mm" height="297mm" viewBox="0 0 210 297" font-family="Helvetica, Arial, sans-serif">"#);
+    let _ = writeln!(s, r#"<defs><image id="bd" href="data:image/jpeg;base64,{}" x="0" y="0" width="{PAGE_W}" height="{sp}" preserveAspectRatio="none"/></defs>"#, b64(backdrop_jpg));
+    let _ = writeln!(s, r##"<use href="#bd"/>"##);
     let _ = writeln!(s, r#"<image href="data:image/jpeg;base64,{}" x="0" y="{sp}" width="{PAGE_W}" height="{sp}" preserveAspectRatio="none"/>"#, b64(floor_jpg));
     let mut steps: Vec<(f32, f32)> = placed.iter().map(|p| p.step).collect();
     steps.sort_by(|a, b| a.0.total_cmp(&b.0));
     for p in placed {
-        let (x0, x1, a) = (p.step.0, p.step.1, p.a);
+        let (x0, x1, h, d) = (p.step.0, p.step.1, p.h, p.d);
         let w = x1 - x0;
-        let _ = writeln!(s, r#"<rect x="{x0:.2}" y="{:.2}" width="{w:.2}" height="{a:.2}" fill="{top}"/>"#, sp - a);
-        let _ = writeln!(s, r##"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="none" stroke="#333" stroke-width="0.2" stroke-dasharray="1 1"/>"##, x0 + 1.0, sp + 1.0, w - 2.0, a - 2.0);
-        let _ = writeln!(s, r##"<text x="{:.2}" y="{:.2}" font-size="3" text-anchor="middle" fill="#222">glue {}</text>"##, x0 + w / 2.0, sp + a / 2.0 + 1.0, p.label);
-        let _ = writeln!(s, r#"<line x1="{x0:.2}" y1="{:.2}" x2="{x0:.2}" y2="{:.2}" {CUT}/><line x1="{x1:.2}" y1="{:.2}" x2="{x1:.2}" y2="{:.2}" {CUT}/>"#, sp - a, sp + a, sp - a, sp + a);
-        let _ = writeln!(s, r#"<line x1="{x0:.2}" y1="{:.2}" x2="{x1:.2}" y2="{:.2}" {VALLEY}/><line x1="{x0:.2}" y1="{:.2}" x2="{x1:.2}" y2="{:.2}" {VALLEY}/>"#, sp - a, sp - a, sp + a, sp + a);
-        let _ = writeln!(s, r#"<line x1="{x0:.2}" y1="{sp}" x2="{x1:.2}" y2="{sp}" {MOUNTAIN}/>"#);
+        let (ya, yf) = (sp - h, sp + d); // back attach, floor attach (sheet y)
+        let ym = ya + d; // mountain fold: d along the strip from the back attach
+        // Top face (ya..ym): ground colour. Front face (ym..yf): the backdrop rows it hides.
+        let _ = writeln!(s, r#"<rect x="{x0:.2}" y="{ya:.2}" width="{w:.2}" height="{d:.2}" fill="{top}"/>"#);
+        let _ = writeln!(s, r##"<svg x="{x0:.2}" y="{ym:.2}" width="{w:.2}" height="{h:.2}" viewBox="{x0:.2} {:.2} {w:.2} {h:.2}" preserveAspectRatio="none"><use href="#bd"/></svg>"##, sp - h);
+        // Glue area: the top of the front face, from the box top down to the piece's bottom edge.
+        let g = h - p.e;
+        let _ = writeln!(s, r##"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="none" stroke="#333" stroke-width="0.2" stroke-dasharray="1 1"/>"##, x0 + 1.0, ym + 0.8, w - 2.0, (g - 1.6).max(0.5));
+        let _ = writeln!(s, r##"<text x="{:.2}" y="{:.2}" font-size="3" text-anchor="middle" fill="#222" stroke="#fff" stroke-width="0.6" paint-order="stroke">glue {}</text>"##, x0 + w / 2.0, ym + g / 2.0 + 1.0, p.label);
+        let _ = writeln!(s, r#"<line x1="{x0:.2}" y1="{ya:.2}" x2="{x0:.2}" y2="{yf:.2}" {CUT}/><line x1="{x1:.2}" y1="{ya:.2}" x2="{x1:.2}" y2="{yf:.2}" {CUT}/>"#);
+        let _ = writeln!(s, r#"<line x1="{x0:.2}" y1="{ya:.2}" x2="{x1:.2}" y2="{ya:.2}" {VALLEY}/><line x1="{x0:.2}" y1="{yf:.2}" x2="{x1:.2}" y2="{yf:.2}" {VALLEY}/>"#);
+        let _ = writeln!(s, r#"<line x1="{x0:.2}" y1="{ym:.2}" x2="{x1:.2}" y2="{ym:.2}" {MOUNTAIN}/>"#);
     }
     // Main spine valley fold, interrupted by the boxes.
     let mut cursor = 0.0;
@@ -204,7 +247,7 @@ pub fn base_svg(spread: usize, backdrop_jpg: &[u8], floor_jpg: &[u8], top: &str,
         }
         cursor = x1;
     }
-    let _ = writeln!(s, r##"<text x="4" y="293" font-size="2.6" fill="#222">Spread {spread} · base sheet · print on 160–250 gsm card ·  <tspan fill="#e00000">── cut</tspan>  <tspan fill="#008a3e">- - valley fold</tspan>  <tspan fill="#e07000">-·- mountain fold</tspan> · fold in half, push each box forward, glue cut-outs flush with the floor</text>"##);
+    let _ = writeln!(s, r##"<text x="4" y="293" font-size="2.6" fill="#222">Spread {spread} · base sheet · print on 160–250 gsm card ·  <tspan fill="#e00000">── cut</tspan>  <tspan fill="#008a3e">- - valley fold</tspan>  <tspan fill="#e07000">-·- mountain fold</tspan> · fold in half, push each box forward, glue each cut-out's bottom edge on its box's dotted line</text>"##);
     s.push_str("</svg>\n");
     s
 }
@@ -219,6 +262,7 @@ pub fn pieces_svgs(spread: usize, items: &[(&Placed, &Art)]) -> Vec<String> {
         let n = sheets.len() + 1;
         sheets.push(format!(
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" viewBox="0 0 210 297" font-family="Helvetica, Arial, sans-serif">
+<rect width="210" height="297" fill="#fff"/>
 {body}<text x="8" y="292" font-size="2.6" fill="#222">Spread {spread} · cut-outs sheet {n} · cut on the red line · glue each piece's bottom edge flush with the floor onto the matching "glue" box face</text>
 </svg>
 "##
@@ -239,7 +283,7 @@ pub fn pieces_svgs(spread: usize, items: &[(&Placed, &Art)]) -> Vec<String> {
         }
         let _ = writeln!(body, r#"<image href="data:image/png;base64,{}" x="{x:.2}" y="{y:.2}" width="{:.2}" height="{:.2}" preserveAspectRatio="none"/>"#, b64(&art.png), art.w_mm, art.h_mm);
         let _ = writeln!(body, r#"<path d="{}" {CUT}/>"#, path_d(&art.outline, x, y));
-        let _ = writeln!(body, r##"<text x="{x:.2}" y="{:.2}" font-size="3" fill="#222">S{spread}-{} → box {} (depth {:.0} mm)</text>"##, y + art.h_mm + 3.5, pl.label, pl.label, pl.a);
+        let _ = writeln!(body, r##"<text x="{x:.2}" y="{:.2}" font-size="3" fill="#222">S{spread}-{} → box {} (depth {:.0} mm)</text>"##, y + art.h_mm + 3.5, pl.label, pl.label, pl.d);
         x += art.w_mm + gap;
         row_h = row_h.max(art.h_mm);
     }

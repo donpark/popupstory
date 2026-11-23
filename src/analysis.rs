@@ -90,12 +90,28 @@ fn chi2(a: &[f32; 64], b: &[f32; 64]) -> f32 {
         .sum::<f32>()
 }
 
-/// Split into shots wherever the colour histogram jumps.
+fn mean_abs_diff(a: &RgbImage, b: &RgbImage) -> f32 {
+    let n = (a.width() * a.height() * 3) as f32;
+    a.as_raw().iter().zip(b.as_raw()).map(|(x, y)| (*x as f32 - *y as f32).abs()).sum::<f32>() / (n * 255.0)
+}
+
+/// Split into shots wherever the colour histogram jumps, or the picture changes far more
+/// than it does between neighbouring frames (cuts between similar-coloured scenes, e.g. two
+/// meadows, barely move the histogram).
 pub fn detect_shots(frames: &[RgbImage], thr: f32, min_len: usize) -> Vec<Range<usize>> {
     let hs: Vec<_> = frames.iter().map(hist).collect();
+    let diffs: Vec<f32> = (1..frames.len()).map(|i| mean_abs_diff(&frames[i - 1], &frames[i])).collect();
+    let local = |i: usize| -> f32 {
+        // median of nearby frame differences, excluding the pair itself
+        let mut v: Vec<f32> = (i.saturating_sub(4)..(i + 4).min(diffs.len())).filter(|&k| k != i).map(|k| diffs[k]).collect();
+        v.sort_by(|a, b| a.total_cmp(b));
+        v.get(v.len() / 2).copied().unwrap_or(0.0)
+    };
     let mut cuts = vec![0usize];
     for i in 1..frames.len() {
-        if chi2(&hs[i - 1], &hs[i]) > thr && i - cuts.last().unwrap() >= min_len {
+        let d = diffs[i - 1];
+        let jump = d > 0.09 && d > 3.0 * local(i - 1);
+        if (chi2(&hs[i - 1], &hs[i]) > thr || jump) && i - cuts.last().unwrap() >= min_len {
             cuts.push(i);
         }
     }
@@ -251,10 +267,14 @@ pub fn figure_map(depth: &FMap) -> FMap {
     let mut f = FMap::new(w, h);
     for y in 0..h {
         for x in 0..w {
-            f.d[y * w + x] = (depth.at(x, y) - med[y]).max(0.0);
+            // Relative, not absolute: a far figure standing clear of what is around it should
+            // count as much as a near one (absolute differences favour whatever is nearest).
+            // On a fixed scale (≈ 60 % nearer than the row = 1), so one very near object
+            // does not flatten every other figure in the frame to grey.
+            f.d[y * w + x] = (((depth.at(x, y) - med[y]) / (med[y] + 0.05)) / 0.6).clamp(0.0, 1.0);
         }
     }
-    f.blur((w / 160).max(1)).normalize(0.02, 0.995)
+    f.blur((w / 160).max(1))
 }
 
 /// Load an external depth map (8- or 16-bit grayscale) as nearness in 0..1.
@@ -269,6 +289,95 @@ pub fn load_external_depth(path: &std::path::Path, far_is_bright: bool) -> anyho
         m.d[i] = if far_is_bright { 1.0 / (v + 0.02) } else { v };
     }
     Ok(m.normalize(0.01, 0.99))
+}
+
+/// Fill `hole` pixels (non-zero) from their surroundings with push-pull pyramid
+/// interpolation: a smooth, cheap fill with no ML. Used to take cut-out subjects out of the
+/// backdrop and out of farther cut-outs, so nothing appears twice once the pop-ups stand
+/// in front. The fill is blurry, but it sits behind the piece that replaces it.
+pub fn inpaint(img: &RgbImage, hole: &GrayImage) -> RgbImage {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let mut cols: Vec<Vec<[f32; 3]>> = vec![];
+    let mut wts: Vec<Vec<f32>> = vec![];
+    let mut dims: Vec<(usize, usize)> = vec![(w, h)];
+    let mut c0 = vec![[0f32; 3]; w * h];
+    let mut w0 = vec![0f32; w * h];
+    for (i, (p, m)) in img.pixels().zip(hole.pixels()).enumerate() {
+        if m[0] == 0 {
+            c0[i] = [p[0] as f32, p[1] as f32, p[2] as f32];
+            w0[i] = 1.0;
+        }
+    }
+    cols.push(c0);
+    wts.push(w0);
+    // Pull: average 2×2 blocks (premultiplied colour, coverage weight).
+    while dims.last().unwrap().0 > 1 || dims.last().unwrap().1 > 1 {
+        let (pw, ph) = *dims.last().unwrap();
+        let (nw, nh) = (pw.div_ceil(2), ph.div_ceil(2));
+        let (pc, pwt) = (cols.last().unwrap(), wts.last().unwrap());
+        let mut nc = vec![[0f32; 3]; nw * nh];
+        let mut nwt = vec![0f32; nw * nh];
+        for y in 0..ph {
+            for x in 0..pw {
+                let (s, d) = (y * pw + x, (y / 2) * nw + x / 2);
+                for k in 0..3 {
+                    nc[d][k] += pc[s][k] * 0.25;
+                }
+                nwt[d] += pwt[s] * 0.25;
+            }
+        }
+        cols.push(nc);
+        wts.push(nwt);
+        dims.push((nw, nh));
+    }
+    // Push: from coarse to fine, fill missing coverage from the level above.
+    let top = cols.len() - 1;
+    let t = wts[top][0].max(1e-6);
+    cols[top][0] = cols[top][0].map(|v| v / t);
+    for lvl in (0..top).rev() {
+        let (lw, lh) = dims[lvl];
+        let (cw, ch) = dims[lvl + 1];
+        let up = cols[lvl + 1].clone();
+        // Bilinear sample of the coarser level (nearest-pixel upsampling leaves visible blocks).
+        let sample = |fx: f32, fy: f32| -> [f32; 3] {
+            let fx = fx.clamp(0.0, (cw - 1) as f32);
+            let fy = fy.clamp(0.0, (ch - 1) as f32);
+            let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+            let (x1, y1) = ((x0 + 1).min(cw - 1), (y0 + 1).min(ch - 1));
+            let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+            let at = |x: usize, y: usize| up[y * cw + x];
+            [0, 1, 2].map(|k| {
+                let top = at(x0, y0)[k] * (1.0 - tx) + at(x1, y0)[k] * tx;
+                let bot = at(x0, y1)[k] * (1.0 - tx) + at(x1, y1)[k] * tx;
+                top * (1.0 - ty) + bot * ty
+            })
+        };
+        for y in 0..lh {
+            for x in 0..lw {
+                let i = y * lw + x;
+                let coarse = sample((x as f32 + 0.5) / 2.0 - 0.5, (y as f32 + 0.5) / 2.0 - 0.5);
+                let wl = wts[lvl][i].min(1.0);
+                let norm = if wts[lvl][i] > 1e-6 { cols[lvl][i].map(|v| v / wts[lvl][i]) } else { coarse };
+                cols[lvl][i] = [0, 1, 2].map(|k| norm[k] * wl + coarse[k] * (1.0 - wl));
+            }
+        }
+    }
+    let filled = &cols[0];
+    RgbImage::from_fn(w as u32, h as u32, |x, y| {
+        let i = y as usize * w + x as usize;
+        if hole.get_pixel(x, y)[0] == 0 {
+            *img.get_pixel(x, y)
+        } else {
+            image::Rgb(filled[i].map(|v| v.clamp(0.0, 255.0) as u8))
+        }
+    })
+}
+
+/// Scale a mask to `w`×`h` and grow it by `grow` pixels (covers soft subject edges).
+pub fn scale_mask(m: &GrayImage, w: u32, h: u32, grow: u8) -> GrayImage {
+    let s = image::imageops::resize(m, w, h, image::imageops::FilterType::Triangle);
+    let s = GrayImage::from_fn(w, h, |x, y| Luma([if s.get_pixel(x, y)[0] >= 96 { 255 } else { 0 }]));
+    if grow == 0 { s } else { imageproc::morphology::dilate(&s, imageproc::distance_transform::Norm::L2, grow) }
 }
 
 pub struct DepthInfo {

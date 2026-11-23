@@ -38,9 +38,18 @@ struct Args {
     /// External depth maps encode distance (bright = far), e.g. metric depth.
     #[arg(long)]
     depth_far_is_bright: bool,
+    /// Name of the depth model, shown in the book (e.g. "Depth Pro 2")
+    #[arg(long)]
+    depth_label: Option<String>,
+    /// Keep close-up shots (by default they are skipped; wide shots make better pop-ups)
+    #[arg(long)]
+    keep_closeups: bool,
     /// Pixel width used for printed art
     #[arg(long, default_value_t = 1600)]
     art_width: u32,
+    /// Embed the printable sheets in book.json (lets the web player offer "Print sheets")
+    #[arg(long)]
+    embed_sheets: bool,
     /// Book title (defaults to the file name)
     #[arg(long)]
     title: Option<String>,
@@ -74,9 +83,13 @@ fn main() -> Result<()> {
         layers: args.layers,
         max_pieces: args.max_pieces,
         cut_threshold: args.cut_threshold,
+        skip_closeups: !args.keep_closeups,
     };
     let mut plan = book::plan_keys(&frames, fps, opts);
-    eprintln!("▸ {} frames, {} shots → {} spreads", frames.len(), plan.shots, plan.spreads.len());
+    eprintln!(
+        "▸ {} frames, {} shots ({} close-ups skipped) → {} spreads",
+        frames.len(), plan.shots, plan.closeups, plan.spreads.len()
+    );
     let time_of = |plan: &book::Plan, i: usize| plan.time_of(i).min(duration - 0.05).max(0.0);
 
     // High-res keyframes first: they are the print art and the input to any depth model.
@@ -105,12 +118,20 @@ fn main() -> Result<()> {
             .transpose()?;
     }
     book::analyze(&mut plan, &frames);
+    if let Some(label) = &args.depth_label {
+        for sp in plan.spreads.iter_mut() {
+            if let Some(info) = sp.info.as_mut() {
+                info.source = info.source.replace("external depth map", label);
+            }
+        }
+    }
 
     let mut outs = Vec::new();
     for i in 0..plan.spreads.len() {
         let n = i + 1;
         let sp = &plan.spreads[i];
         sp.depth.as_ref().unwrap().to_gray().save(out.join(format!("debug/depth_{n:02}.png")))?;
+        analysis::figure_map(sp.depth.as_ref().unwrap()).to_gray().save(out.join(format!("debug/figure_{n:02}.png")))?;
         let samples = if sp.info.as_ref().unwrap().motion_reliable {
             sp.hi_samples
                 .iter()
@@ -133,7 +154,7 @@ fn main() -> Result<()> {
         );
         outs.push(o);
     }
-    std::fs::write(out.join("book.json"), book::book_json(&title, &outs, false))?;
+    std::fs::write(out.join("book.json"), book::book_json(&title, &outs, args.embed_sheets))?;
     std::fs::remove_dir_all(&cache).ok();
     eprintln!("✓ wrote {0}/book.json (open it in the web player) and printable sheets in {0}/sheets", out.display());
     Ok(())

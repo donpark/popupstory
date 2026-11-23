@@ -1,14 +1,20 @@
 //! Paper engineering: place each cut-out on a 90° parallel ("box") fold.
 //!
+//! Boxes are not cubes: depth `d` sets how far forward a cut-out stands, height `h` lifts it
+//! back to its height in the frame (the piece is glued at elevation `e` on the front face),
+//! so seen head-on the spread reproduces the shot, like a tunnel book.
+//!
 //! One A4 sheet, folded across the middle, is one spread. The top half is the back
-//! page, the bottom half the floor. A box fold of size `a` is two parallel slits that
-//! run `a` up the back page and `a` down the floor; with the sheet open at angle θ the
-//! strip forms a parallelogram: top face parallel to the floor at height a·sinθ, front
-//! face parallel to the back page at distance a from the spine. A cut-out glued to
-//! that front face stands parallel to the back page at depth `a`.
+//! page, the bottom half the floor. A box fold is two parallel slits that run `h` up the
+//! back page and `d` into the floor. Valley folds at both ends, and a mountain fold where
+//! the top face meets the front face: `d` along the strip from the back attach (on the
+//! back page if h > d, on the floor if h < d). With the sheet open at angle θ the strip is
+//! a parallelogram: spine O, back attach B = h·b, floor attach F = d·f, corner C = B + F.
+//! The top face (B→C) stays parallel to the floor and the front face (F→C) parallel to
+//! the back page, so a cut-out glued to the front face stands at depth `d`.
 //!
 //! Constraints enforced here:
-//!  * a + piece height ≤ page height  (folds flat inside the closed book)
+//!  * d + e + piece height ≤ page height, and d + h ≤ page height (folds flat when closed)
 //!  * box folds never overlap sideways
 //!  * a shallower piece that rises above a deeper box's top face gets a notch so the
 //!    top face can pass through it (valid through the whole open/close motion,
@@ -20,6 +26,8 @@ pub const PAGE_H: f32 = 148.5; // mm, half of A4 height
 const MIN_STEP: f32 = 10.0;
 const GAP: f32 = 3.0;
 const EDGE: f32 = 7.0;
+const MIN_D: f32 = 8.0;
+const NOTCH: f32 = 1.5;
 
 /// Region of the analysis frame shown on the page ("cover" fit), in frame pixels.
 #[derive(Clone, Copy)]
@@ -45,8 +53,13 @@ pub fn page_crop(fw: u32, fh: u32) -> Crop {
 pub struct Placed {
     pub piece: usize,
     pub label: String,
-    /// Box-fold size (= depth from back page = step height), mm.
-    pub a: f32,
+    /// Box depth: how far the front face (and the cut-out on it) stands from the back page, mm.
+    pub d: f32,
+    /// Box height: the top face sits this high above the floor, mm.
+    pub h: f32,
+    /// Elevation of the cut-out's bottom edge on the front face, mm. It lifts the piece back to
+    /// where it was in the frame, so the spread reproduces the shot when seen head-on.
+    pub e: f32,
     /// Left edge of the piece bbox and its size, mm.
     pub x: f32,
     pub wmm: f32,
@@ -87,32 +100,59 @@ fn find_slot(l: f32, r: f32, used: &[(f32, f32)]) -> Option<(f32, f32)> {
 
 pub fn layout(pieces: &[Piece], crop: &Crop, n_layers: usize, warnings: &mut Vec<String>) -> Vec<Placed> {
     let s0 = PAGE_W / crop.w;
-    // Fold depth follows how near each piece is, stretched over this spread's range so
-    // the nearest piece sits forward and the farthest just off the back page.
+    // Box depth follows how near each piece is, stretched over this spread's range.
     let (lo, hi) = pieces.iter().fold((f32::MAX, f32::MIN), |(l, h), p| (l.min(p.near), h.max(p.near)));
     let span = (hi - lo).max(0.15);
-    let level = |p: &Piece| PAGE_H * (0.14 + 0.32 * ((p.near - lo) / span).clamp(0.0, 1.0));
+    let level = |p: &Piece| PAGE_H * (0.08 + 0.30 * ((p.near - lo) / span).clamp(0.0, 1.0));
     let _ = n_layers;
     let mut used: Vec<(f32, f32)> = Vec::new();
     let mut placed: Vec<Placed> = Vec::new();
 
     // Pieces arrive in priority order; earlier ones get first pick of fold positions.
     for (i, p) in pieces.iter().enumerate() {
-        let mut s = s0;
-        let mut wmm = p.bw as f32 * s;
-        let mut hmm = p.bh as f32 * s;
-        let a = level(p).min(hmm * 0.85).max(10.0);
-        let max_h = PAGE_H - a - 2.0;
-        let max_w = PAGE_W - 2.0 * EDGE;
-        let f = (max_h / hmm).min(max_w / wmm).min(1.0);
+        // Keep each piece where it was in the frame: same size, same height on the page.
+        let mut wmm = p.bw as f32 * s0;
+        let mut hmm = p.bh as f32 * s0;
+        let top = (p.by as f32 - crop.y) * s0;
+        let mut e = (PAGE_H - top - hmm).max(0.0);
         let cx = (p.bx as f32 + p.bw as f32 / 2.0 - crop.x) * s0;
-        s *= f;
-        wmm *= f;
-        hmm *= f;
+        // Fold flat: when closed the front face lies flat from d outward and the piece reaches
+        // d + e + hmm from the spine. Prefer a shallower box, then lowering the piece a little,
+        // then shrinking it a little. A piece that only fits much smaller (a trunk reaching
+        // the top of the page) stays in the backdrop: shrunk or moved, it would no longer line
+        // up with the picture and would show up twice.
+        let room = PAGE_H - 1.0 - e - hmm; // space above the piece
+        let mut d = level(p).max(MIN_D).min(room.max(MIN_D));
+        let mut need = d + e + hmm - (PAGE_H - 1.0);
+        if need > 0.0 {
+            let lower = need.min(e).min(6.0);
+            e -= lower;
+            need -= lower;
+        }
+        if need > 0.0 {
+            let f = (hmm - need) / hmm;
+            if f < 0.85 {
+                warnings.push(format!("kept a {wmm:.0}×{hmm:.0} mm piece in the backdrop: too tall to fold flat"));
+                continue;
+            }
+            wmm *= f;
+            hmm *= f;
+        }
+        d = d.min(PAGE_H - 1.0 - e - hmm).max(MIN_D.min(PAGE_H - 1.0 - e - hmm));
+        let max_w = PAGE_W - 2.0 * EDGE;
+        if wmm > max_w {
+            let f = max_w / wmm;
+            wmm *= f;
+            hmm *= f;
+        }
+        let s = hmm / p.bh as f32; // mm per analysis pixel after any scaling
         let x = (cx - wmm / 2.0).clamp(EDGE / 2.0, PAGE_W - EDGE / 2.0 - wmm);
+        // The piece is glued to the top band of the front face; the box rises to its top.
+        let glue = (0.35 * hmm).clamp(8.0, 25.0).min(hmm);
+        let h = e + glue;
 
         // Where is the piece solid in the band that will be glued to the front face?
-        let band = ((a / s).round() as u32).clamp(1, p.bh);
+        let band = ((glue / s).round() as u32).clamp(1, p.bh);
         let cols: Vec<u32> = (0..p.bw)
             .filter(|&c| {
                 let n = (p.bh - band..p.bh).filter(|&y| p.mask.get_pixel(c, y)[0] != 0).count();
@@ -123,12 +163,11 @@ pub fn layout(pieces: &[Piece], crop: &Crop, n_layers: usize, warnings: &mut Vec
             (Some(&l), Some(&r)) => (x + l as f32 * s, x + (r + 1) as f32 * s),
             _ => (x, x + wmm),
         };
-        // Prefer a fold hidden behind the solid base of the piece; otherwise anywhere
-        // under it (the box face then reads as a small pedestal).
+        // Prefer a fold hidden behind the solid base of the piece; otherwise anywhere under it.
         match find_slot(l, r, &used).or_else(|| find_slot(x, x + wmm, &used)) {
             Some(step) => {
                 used.push(step);
-                placed.push(Placed { piece: i, label: String::new(), a, x, wmm, hmm, step, notches: vec![] });
+                placed.push(Placed { piece: i, label: String::new(), d, h, e, x, wmm, hmm, step, notches: vec![] });
             }
             None => warnings.push(format!(
                 "dropped a {:.0}×{:.0} mm layer-{} cut-out: no room for its fold",
@@ -137,22 +176,23 @@ pub fn layout(pieces: &[Piece], crop: &Crop, n_layers: usize, warnings: &mut Vec
         }
     }
 
-    // Notches where a deeper box's top face passes through a shallower piece.
-    let snapshot: Vec<(f32, (f32, f32))> = placed.iter().map(|p| (p.a, p.step)).collect();
+    // Notches where a deeper box's top face (height h_j) passes through a shallower piece.
+    let snapshot: Vec<(f32, f32, (f32, f32))> = placed.iter().map(|p| (p.d, p.h, p.step)).collect();
     for p in placed.iter_mut() {
-        for &(aj, (x0, x1)) in &snapshot {
-            if aj <= p.a + 0.5 || p.hmm <= aj - 1.5 {
+        for &(dj, hj, (x0, x1)) in &snapshot {
+            let (lo_z, hi_z) = (p.e, p.e + p.hmm);
+            if dj <= p.d + 0.5 || hj + NOTCH <= lo_z || hj - NOTCH >= hi_z {
                 continue;
             }
-            let (n0, n1) = ((x0 - 1.5).max(p.x), (x1 + 1.5).min(p.x + p.wmm));
+            let (n0, n1) = ((x0 - NOTCH).max(p.x), (x1 + NOTCH).min(p.x + p.wmm));
             if n1 > n0 {
-                p.notches.push([n0 - p.x, n1 - p.x, aj - 1.5]);
+                p.notches.push([n0 - p.x, n1 - p.x, (hj - NOTCH - p.e).max(0.0)]);
             }
         }
     }
 
     // Number back-to-front, left-to-right.
-    placed.sort_by(|a, b| a.a.total_cmp(&b.a).then(a.x.total_cmp(&b.x)));
+    placed.sort_by(|a, b| a.d.total_cmp(&b.d).then(a.x.total_cmp(&b.x)));
     for (n, p) in placed.iter_mut().enumerate() {
         p.label = format!("P{}", n + 1);
     }

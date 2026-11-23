@@ -40,10 +40,12 @@ fn builds_a_foldable_book() {
         }
         for p in &sp.placed {
             assert!(p.step.0 >= 0.0 && p.step.1 <= PAGE_W);
-            // Folds flat inside the closed book: fold depth + piece height ≤ page height.
-            assert!(p.a + p.hmm <= PAGE_H + 1e-3, "{} + {} > page", p.a, p.hmm);
-            // The box corner stays on the page when closed.
-            assert!(2.0 * p.a <= PAGE_H);
+            // Folds flat inside the closed book: depth + elevation + piece height ≤ page.
+            assert!(p.d + p.e + p.hmm <= PAGE_H + 1e-3, "{} + {} + {} > page", p.d, p.e, p.hmm);
+            // The box corner stays on the page when closed, and the piece's glued edge is on
+            // the box's front face.
+            assert!(p.d + p.h <= PAGE_H + 1e-3);
+            assert!(p.e >= 0.0 && p.e < p.h && p.h <= p.e + p.hmm + 1e-3);
         }
         let key = frames[sp.key].clone();
         let out = book::render_spread(&plan, i, &key, &[]);

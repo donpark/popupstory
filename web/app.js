@@ -6,6 +6,7 @@ import { BookPlayer } from './player.js';
 const $ = (id) => document.getElementById(id);
 const ANALYSIS_W = 320;
 const ART_W = 1600;
+const DEMO_BOOK = './samples/big-buck-bunny.book.json';
 
 const wasmReady = init();
 let player = null;
@@ -154,7 +155,7 @@ function download(name, text, type) {
 $('file').addEventListener('change', (e) => handleFile(e.target.files[0]));
 $('sample').onclick = async () => {
   $('error').textContent = '';
-  const blob = await (await fetch('./samples/big-buck-bunny-10s.mp4')).blob();
+  const blob = await (await fetch('./samples/big-buck-bunny-montage.mp4')).blob();
   handleFile(new File([blob], 'Big Buck Bunny', { type: 'video/mp4' }));
 };
 const drop = $('drop');
@@ -181,6 +182,15 @@ setInterval(() => {
   $('toggle').textContent = player.theta > 45 ? 'Close' : 'Open';
 }, 60);
 
-// ?book=path/to/book.json opens a book made by the CLI.
-const q = new URLSearchParams(location.search).get('book');
-if (q) fetch(q).then((r) => r.json()).then(openBook).catch((e) => { $('error').textContent = `Couldn't load ${q}: ${e.message}`; });
+// ?book=path/to/book.json opens a book made by the CLI. With no parameter the demo book opens,
+// so a first visit lands on a finished pop-up book ("New book" makes your own). ?new skips it.
+const params = new URLSearchParams(location.search);
+const q = params.get('book') ?? (params.has('new') ? null : DEMO_BOOK);
+if (q) {
+  show('working');
+  $('status').textContent = 'Opening the book…';
+  fetch(q)
+    .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+    .then(openBook)
+    .catch((e) => { show('intro'); $('error').textContent = `Couldn't load ${q}: ${e.message}`; });
+}

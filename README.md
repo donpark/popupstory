@@ -3,7 +3,19 @@
 Turn a short video into a pop-up book: a 3D papercraft book you can flip through in the browser, and printable A4
 sheets to cut, fold and glue into the real thing.
 
-**[Try it in your browser →](https://donpark.github.io/popupstory/)** Drop in a short video, or use the sample.
+**[Try it in your browser →](https://donpark.github.io/popupstory/)** It opens on a demo book; *New book* makes
+your own from a short video.
+
+![A Big Buck Bunny spread in the PopUpStory player](docs/screenshots/app.jpg)
+
+| | | |
+|---|---|---|
+| ![Rodents on the rock](docs/screenshots/spread-rodents.jpg) | ![Head-on, the spread reproduces the shot](docs/screenshots/spread-headon.jpg) | ![The forest log](docs/screenshots/spread-forest.jpg) |
+| Cut-outs stand at their own depths | Head-on, a spread reproduces its shot | Any shot with figures on the ground works |
+
+![Printable base sheet and cut-outs](docs/screenshots/print-sheets.jpg)
+
+*Print, cut, fold: a base sheet per spread (backdrop, floor, slits, folds, glue marks) and cut-out sheets.*
 
 - **Web app** (`web/`): drop a video and it builds the book in your browser. Decoding uses a `<video>` element,
   analysis and paper engineering run in the Rust core compiled to WebAssembly, and rendering uses three.js with
@@ -25,16 +37,23 @@ cargo run --release -- movie.mp4 -o my-book --spreads 6     # binary: popupstory
 
 | Stage | Method |
 |---|---|
-| Spreads | colour-histogram shot detection → longest shots → sharpest frame in each |
-| Backdrop | temporal median "clean plate"; moving subjects painted out of the sharp keyframe |
-| Depth | heuristic nearness: motion vs. plate, focus, colour saliency, vertical position, centre bias |
-| Layers | figure/ground map (depth minus each row's typical depth, a rough ground plane), so cut-outs are things *standing on* the ground, not the ground itself; nested thresholds → morphology → components |
-| Paper engineering | 90° box folds; each piece's fold depth comes from its depth; `fold + piece height ≤ page`; folds never overlap; a shallower piece gets a notch where a deeper box's top face passes through it |
-| Print | A4 SVG: backdrop on the top half, mirrored ground on the floor half, cut / valley / mountain lines, glue marks; cut-outs printed with bleed out to the cut line |
+| Spreads | shot detection (colour-histogram jumps + frame-difference spikes) → longest wide shots (close-ups skipped) → sharpest frame in each |
+| Depth | heuristic nearness (motion, focus, colour saliency, position), or a depth model |
+| Objects | figure/ground map (how much nearer than its image row, a rough ground plane) → one region per object, kept whole at its median depth; split only where its depths form clearly separate groups |
+| Clean edges | with a full-resolution depth map, each mask snaps to depth edges (no halo of grass round a head) |
+| Paper engineering | 90° box folds whose depth places a cut-out and whose height lifts it back to where it was in the frame, so head-on a spread reproduces its shot; folds flat (`depth + elevation + height ≤ page`); folds never overlap; notches where a deeper box passes through a shallower piece; anything too tall to fold flat stays in the backdrop |
+| Backdrop | the sharp keyframe with every cut-out filled out of it (push-pull pyramid fill) so nothing appears twice; same for nearer cut-outs inside farther ones |
+| Print | A4 SVG: backdrop on the top half, ground on the floor half, slits, valley / mountain folds, glue marks; box faces printed with the backdrop they hide; cut-outs with bleed out to the cut line |
 | Player | papercraft's `makeCard` turns each cut line + image into a card with thickness and a printed cut edge, plus matte paper shading, PCSS shadows, a tilt-shift lens and the latched flap spring for opening and closing |
 
 The player uses the same kinematics as the paper. At opening angle θ every box strip is a parallelogram, so each
 face stays parallel to the back page or the floor, and a spread that folds flat on screen folds flat in card.
+
+## The demo book
+
+The preloaded book is built from `web/samples/big-buck-bunny-montage.mp4`, eight wide shots from Big Buck Bunny
+(© Blender Foundation, CC BY 3.0), with depth from Apple's Depth Pro 2 (H+) run locally, as a non-commercial demo.
+`scripts/build-demo.sh` rebuilds it. Books made in the browser use the heuristic or Depth Anything V2 small.
 
 ## Optional: a depth model (the "minimal AI" switch)
 
@@ -94,8 +113,10 @@ Paper rendering uses [papercraft](https://github.com/xikhar/papercraft) by xikha
 
 ## Known limits
 
-- Moving-camera shots lose the motion cue and the clean plate; global motion compensation would recover both.
-- Nested layers can still produce near-duplicate cut-outs of one object.
+- Without a depth model, layers are much rougher: masks are blurry and objects are missed or merged.
+- The close-up detector and the "longest shots" choice are heuristics: on a whole film they can still pick a
+  close-up or a credits card. Curating shots (as for the demo) gives far better books.
+- The fill behind cut-outs is a smooth blur, invisible head-on but visible from steep angles and on the print.
 - Objects that float in the frame get glued to the floor.
 - 90° box folds only. 180° spreads need V-folds or floating layers on supports.
 - The cut-out sheets don't nest pieces tightly (shelf packing).
