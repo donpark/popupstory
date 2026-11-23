@@ -51,6 +51,21 @@ forward instead of foreground grass.
   `--depth-far-is-bright` handles metric/distance output, e.g. Apple Depth Pro 2 in metres, converted to inverse
   depth. Check model licences: Depth Pro 2's weights are research / non-commercial.
 
+## Agent skills
+
+Two [Agent Skills](https://agentskills.io) ship with the repo (Claude Code, Codex, Cursor, Gemini CLI, …):
+
+- **`popupstory`**: working on this codebase: the pipeline, units and coordinates, `book.json`, the folding
+  invariants, adding mechanisms, and verification.
+- **`papercraft-3d`**: general engineering for 3D papercraft and pop-up worlds: fold kinematics (box, stacked,
+  floating, V-fold maths), flat-foldability checks, photo → card conversion, paperkit tips, plus lessons from
+  [Papertrails](https://xikhar.github.io/papertrails/) and a design for a PopUpStory roguelike. It pairs with
+  [xikhar/papercraft](https://github.com/xikhar/papercraft), which covers the look.
+
+```
+npx skills add donpark/popupstory
+```
+
 ## Layout
 
 ```
@@ -59,6 +74,7 @@ src/wasm.rs       wasm-bindgen Session for the browser
 src/main.rs       CLI (+ src/video.rs ffmpeg wrapper)
 web/              index.html, app.js (pipeline), player.js (papercraft book), vendor/papercraft (MIT, see COMMIT)
 tests/            end-to-end check that generated books obey the folding rules
+skills/           agent skills: popupstory, papercraft-3d
 ```
 
 ## Credits
