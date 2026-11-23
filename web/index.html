@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PopUpStory</title>
+<meta name="description" content="Turn a short video into a 3D papercraft pop-up book, right in your browser.">
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --paper: #f3ead8; --ink: #3a291c; --muted: #7a6450; --accent: #b4532f; --line: #d9c8a8; --bg: #5b4636;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.45 Georgia, 'Times New Roman', serif; }
+  [hidden] { display: none !important; }
+  button, select { font: inherit; }
+  .panel { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; }
+  .sheet {
+    width: min(560px, 100%); background: var(--paper); border-radius: 4px; padding: 32px 28px 28px;
+    box-shadow: 0 1px 0 #fff8 inset, 0 18px 40px #2a170b66, 0 2px 6px #2a170b55;
+  }
+  h1 { margin: 0 0 6px; font-size: 28px; font-weight: normal; letter-spacing: .01em; }
+  .lede { margin: 0 0 22px; color: var(--muted); }
+  #drop {
+    display: grid; place-items: center; gap: 6px; text-align: center; padding: 34px 16px; border: 2px dashed var(--line);
+    border-radius: 4px; cursor: pointer; transition: background .15s, border-color .15s;
+  }
+  #drop.over, #drop:hover { background: #fffaf0; border-color: var(--accent); }
+  #drop strong { font-size: 17px; }
+  #drop small { color: var(--muted); }
+  .opts { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 18px; align-items: center; color: var(--muted); font-size: 14px; }
+  .opts label { display: flex; gap: 8px; align-items: center; }
+  .opts select { padding: 3px 6px; border: 1px solid var(--line); border-radius: 3px; background: #fffaf0; color: var(--ink); }
+  .sample { margin: 16px 0 0; font-size: 14px; color: var(--muted); }
+  .sample small { display: block; font-size: 12px; margin-top: 2px; }
+  .link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
+  .foot { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+  .foot a { color: inherit; }
+  #error { color: #a0301a; min-height: 1.4em; margin: 14px 0 0; font-size: 14px; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 16px; }
+  #bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  #status { color: var(--muted); margin: 0; }
+  #viewer { position: fixed; inset: 0; }
+  #stage { position: absolute; inset: 0; }
+  #stage canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  .top { position: absolute; top: 14px; left: 16px; right: 16px; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; pointer-events: none; }
+  .top > * { pointer-events: auto; }
+  .title { color: #fff6e4; text-shadow: 0 1px 3px #2a170b; }
+  .title h2 { margin: 0; font-size: 20px; font-weight: normal; }
+  #meta { font-size: 13px; opacity: .85; font-style: italic; }
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .controls {
+    position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 10px; align-items: center;
+    background: var(--paper); padding: 8px 10px; border-radius: 999px; box-shadow: 0 8px 22px #2a170b66; max-width: calc(100% - 32px); flex-wrap: wrap; justify-content: center;
+  }
+  .btn { border: 0; border-radius: 999px; background: var(--ink); color: var(--paper); height: 34px; min-width: 40px; padding: 0 14px; cursor: pointer; }
+  .btn.ghost { background: var(--paper); color: var(--ink); box-shadow: 0 2px 8px #2a170b55; }
+  .btn:disabled { opacity: .35; cursor: default; }
+  #count { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; }
+  .controls label { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
+  input[type=range] { width: 130px; accent-color: var(--accent); }
+  .credit { position: absolute; right: 12px; bottom: 10px; font-size: 11px; color: #fff6e4aa; }
+  .credit a { color: inherit; }
+  @media (max-width: 640px) { .credit { display: none; } .top { flex-direction: column; } .tools { justify-content: flex-start; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<section id="intro" class="panel">
+  <div class="sheet">
+    <h1>PopUpStory</h1>
+    <p class="lede">Turn a short video into a paper pop-up book you can flip through here, or print, cut and fold. It all runs in your browser; your video never leaves your computer.</p>
+    <label id="drop">
+      <strong>Drop a video here</strong>
+      <small>or click to choose · MP4, WebM, MOV · or a <code>book.json</code> from the command line tool</small>
+      <input id="file" type="file" accept="video/*,.json" hidden>
+    </label>
+    <div class="opts">
+      <label>Spreads <select id="spreads"><option>3</option><option>4</option><option selected>6</option><option>8</option><option>10</option></select></label>
+      <label title="Downloads a small depth-estimation model (~25 MB) the first time and runs it on each keyframe, on this device."><input id="model" type="checkbox"> Use a depth model for better layers</label>
+    </div>
+    <p class="sample">No video handy? <button type="button" class="link" id="sample">Try a 10-second sample</button> <small>(Big Buck Bunny, © Blender Foundation, CC BY 3.0)</small></p>
+    <p id="error" role="alert"></p>
+    <p class="foot"><a href="https://github.com/donpark/popupstory" target="_blank" rel="noopener">Source on GitHub</a> · paper rendering by <a href="https://github.com/xikhar/papercraft" target="_blank" rel="noopener">papercraft</a></p>
+  </div>
+</section>
+
+<section id="working" class="panel" hidden>
+  <div class="sheet">
+    <h1>Making your book…</h1>
+    <p id="status">Starting…</p>
+    <div class="bar"><div id="bar"></div></div>
+  </div>
+</section>
+
+<section id="viewer" hidden>
+  <div id="stage"></div>
+  <div class="top">
+    <div class="title"><h2 id="book-title"></h2><div id="meta"></div></div>
+    <div class="tools">
+      <button class="btn ghost" id="print">Print sheets</button>
+      <button class="btn ghost" id="save">Save book</button>
+      <button class="btn ghost" id="again">New book</button>
+    </div>
+  </div>
+  <div class="controls">
+    <button class="btn" id="prev" aria-label="Previous spread">◀</button>
+    <span id="count"></span>
+    <button class="btn" id="next" aria-label="Next spread">▶</button>
+    <label>Fold <input id="angle" type="range" min="0" max="95" step="0.5" value="0"></label>
+    <button class="btn" id="toggle">Close</button>
+    <button class="btn ghost" id="sound">Sound off</button>
+  </div>
+  <div class="credit">paper rendering: <a href="https://github.com/xikhar/papercraft" target="_blank" rel="noopener">papercraft</a> (MIT)</div>
+</section>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
